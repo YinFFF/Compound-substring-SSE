@@ -7,16 +7,16 @@
 #include <vector>         // std::vector 
 #include <sys/time.h>     // gettimeofday
 #include <stack>          // std::stack
-#include <openssl/hmac.h>
-#include <openssl/aes.h>
-#include <openssl/rand.h>
+//#include <openssl/hmac.h>
+//#include <openssl/aes.h>
+//#include <openssl/rand.h>
 #include <stdexcept>
 
 #include "PHIndex.h"
-#include "BFIndex.h"
-#include "AES.h"
-#include "BMIndex.h"
-#include "SuffixTree.h"
+// #include "BFIndex.h"
+// #include "AES.h"
+// #include "BMIndex.h"
+// #include "SuffixTree.h"
 
 #include <chrono>
 #include <cmath>
@@ -491,10 +491,10 @@ int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
   
     
     // initial AES key and record key
-    unsigned char aes_key[32];
-    unsigned char records_key[32];
-    RAND_bytes(aes_key, 32);
-    RAND_bytes(records_key, 32);
+    // unsigned char aes_key[32];
+    // unsigned char records_key[32];
+    // RAND_bytes(aes_key, 32);
+    // RAND_bytes(records_key, 32);
 
     // time calculation
     struct timeval time1, time2;
@@ -525,7 +525,7 @@ int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
     vector<PositionHeap *> keywords_index;
     for (int i = 0; i < AttributesSize; i++){
         PositionHeap *heap = new PositionHeap(string_set[i].c_str(),
-                                              aes_key, 
+                                            //   aes_key, 
                                               records, 
                                               i + 1,
                                               secretKey_pointer, 
@@ -571,7 +571,7 @@ int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
             vector<Ctxt> temp_matching_position;
             // keywords_index[j]->search(query_keywords[j].c_str(), 
             keywords_index[j]->search(records[i][j + 1].c_str(), 
-                                        aes_key, 
+                                        // aes_key, 
                                         time_count,
                                         secretKey_pointer,
                                         ea_pointer, 

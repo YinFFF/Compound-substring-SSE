@@ -24,3 +24,5 @@ SI/SI.si4project/SI.siproj_settings.xml
 *.m
 *.png
 SI.si4project/
+CMakeFiles/
+cmake_install.cmake

@@ -151,7 +151,7 @@ public:
     // T: "ab_ab#cd_cd#" 
     // keywords_list: {"ab", "cd"}
     PositionHeap(const char T[], 
-                 unsigned char *aes_key, 
+                //  unsigned char *aes_key, 
                  vector<vector<string>> &records, 
                  int attribute_index,
                  FHESecKey *secretKey_pointer,
@@ -160,7 +160,7 @@ public:
                  int dualposition_flag) {
 
         const FHEPubKey &publicKey = *secretKey_pointer;
-        unsigned char iv[AES_BLOCK_SIZE];
+        // unsigned char iv[AES_BLOCK_SIZE];
         int row_ind = records.size();
         int ptxt_num = ceil((float)row_ind / ea_pointer->size());
         int copy_flag;
@@ -291,7 +291,7 @@ public:
                        int pos, 
                        vector<Ctxt>& matching_position, 
                        EncryptedArray *ea_pointer,
-                       unsigned char *aes_key, 
+                    //    unsigned char *aes_key, 
                        int &time_count) {
         for (auto itr = nodes[pos].childs.begin(); itr != nodes[pos].childs.end(); itr++){
             // if (nodes[itr->second].keyword.size()){
@@ -315,13 +315,13 @@ public:
             // cout << itr->second % ea_pointer->size() << endl;
 
             replicate(*ea_pointer, matching_position[matching_position.size() - 1], (itr->second) % ea_pointer->size());
-            appendSubtree(secretKey_pointer, itr->second, matching_position, ea_pointer, aes_key, time_count);
+            appendSubtree(secretKey_pointer, itr->second, matching_position, ea_pointer, time_count);
             // }
         }
     }
     
     void search (const char S[], 
-                unsigned char *aes_key, 
+                // unsigned char *aes_key, 
                 int &time_count, 
                 FHESecKey *secretKey_pointer, 
                 EncryptedArray *ea_pointer,
@@ -364,7 +364,7 @@ public:
         }
         
         if (v != -1)
-            appendSubtree(secretKey_pointer, v, matching_position, ea_pointer, aes_key, time_count);
+            appendSubtree(secretKey_pointer, v, matching_position, ea_pointer, time_count);
 
 
         // for (int i = 0; i < temp_ret.size(); i++){
