@@ -437,6 +437,7 @@ void filter(const FHEPubKey &publicKey,
     int small_ind = 0;
     int largest_ind = 0;
 
+    // make sure the smallest set and the largest set
     for (int i = 0; i < matching_positions.size(); i++){
         if (matching_positions[i].size() < matching_positions[small_ind].size())
             small_ind = i;
@@ -488,13 +489,6 @@ void filter(const FHEPubKey &publicKey,
 // if DUALPOSITION = 1, scheme supports s1*s2 wildcard pattern query
 #define DUALPOSITION 0
 int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
-  
-    
-    // initial AES key and record key
-    // unsigned char aes_key[32];
-    // unsigned char records_key[32];
-    // RAND_bytes(aes_key, 32);
-    // RAND_bytes(records_key, 32);
 
     // time calculation
     struct timeval time1, time2;
@@ -591,8 +585,7 @@ int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
         vector<float> temp = {(float)small_size, (float)largest_size, evaluate_time};
         size_time.push_back(temp);
 
-
-        // //msec
+        //msec
         // evaluate_time = 1000*((time2.tv_sec-time1.tv_sec) + ((double)(time2.tv_usec-time1.tv_usec))/1000000);
         // cout << "filter time: " << evaluate_time << endl;
 
