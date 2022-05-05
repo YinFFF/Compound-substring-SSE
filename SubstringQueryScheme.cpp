@@ -7,16 +7,9 @@
 #include <vector>         // std::vector 
 #include <sys/time.h>     // gettimeofday
 #include <stack>          // std::stack
-//#include <openssl/hmac.h>
-//#include <openssl/aes.h>
-//#include <openssl/rand.h>
 #include <stdexcept>
 
 #include "PHIndex.h"
-// #include "BFIndex.h"
-// #include "AES.h"
-// #include "BMIndex.h"
-// #include "SuffixTree.h"
 
 #include <chrono>
 #include <cmath>
@@ -29,6 +22,9 @@
 
 #include "helib/FHE.h"
 #include "helib/EncryptedArray.h"
+#include "helib/binaryArith.h"
+#include "helib/intraSlot.h"
+
 
 using namespace std;
 
@@ -209,17 +205,113 @@ void simdShift(Ctxt &ciphertextResult, Ctxt &ciphertextData, const long shiftAmt
 
 // B = B * A + A + B
 void operationOR(Ctxt& A, Ctxt& B) {
+    // if (B.capacity() < A.capacity()){
+    //     Ctxt temp = B;
+    //     B *= A;
+    //     B += A; // B*A + A
+    //     B += temp;  
+    // } else {
+    //     Ctxt temp = A;
+    //     temp *= B;
+    //     temp += B;
+    //     temp += A;
+    //     B = temp;
+    // }
     Ctxt temp = B;
-    B *= A;
-    B += A; // B*A + A
-    B += temp;  
+    B.multiplyBy(A);
+    B += A;
+    B += temp;
 }
 
 // B = B * A
 void operationAND(Ctxt& A, Ctxt& B) {
-    B *= A;
+    // if (B.capacity() < A.capacity())
+    //     B *= A;
+    // else {
+    //     Ctxt temp = A;
+    //     temp *= B;
+    //     B = temp;
+    // }
+    B.multiplyBy(A);
 }
 
+// B[i] = A[i] + B[i] + c[i - 1], where c[i - 1] is carry-bit
+// c[i] = (A[i] + c[i - 1]) * (B[i] + c[i - 1]) + c[i - 1]
+// void operationAdd(vector<Ctxt>& A, vector<Ctxt>& B, const FHEPubKey &publicKey) {
+//     Ctxt c(publicKey);
+//     for (int i = 0; i < A.size(); i++) {
+//         if (i > 0)
+//             B[i] += c;
+//         B[i] += A[i];
+
+//         Ctxt temp1 = A[i];
+//         temp1 += c;
+//         Ctxt temp2 = B[i];
+//         temp2 += c;
+//         temp1 *= temp2;
+//         c += temp1;
+//     }
+// }
+
+// EqualTest for integers
+void operationEQ(vector<Ctxt>& A, 
+                vector<Ctxt>& B, 
+                Ctxt& oneCiphertext, 
+                Ctxt& result) {
+
+    vector<Ctxt> temp_list;
+    for (int i = 0; i < A.size() || i < B.size(); i++) {
+        if (i < A.size() && i < B.size()) {
+            Ctxt temp = A[i];
+            temp += B[i];
+            temp += oneCiphertext;
+            temp_list.push_back(temp);
+        } else if (i < A.size()) {
+            Ctxt temp = A[i];
+            temp += oneCiphertext;
+            temp_list.push_back(temp);
+        } else {
+            Ctxt temp = B[i];
+            temp += oneCiphertext;
+            temp_list.push_back(temp);
+        }
+    }
+
+    int right_ind = temp_list.size() - 1;
+    while(right_ind) {
+        int operation_count = (right_ind + 1) / 2;
+        for (int i = 0; i < operation_count; ++i)
+            // operationAND(temp_list[right_ind - i], temp_list[i]);
+            temp_list[i].multiplyBy(temp_list[right_ind - i]);
+        right_ind -= operation_count;
+    }
+
+    result = temp_list[0];
+
+    // Ctxt oneCiphertext(publicKey);
+    // std::vector<NTL::ZZX> onePlaintext(numSlots, NTL::ZZX(1));
+    // ea.encrypt(oneCiphertext, publicKey, onePlaintext);
+    // for (int i = 0; i < A.size() || i < B.size(); i++){
+    //     if (i == 0) {
+    //         result = oneCiphertext;
+    //         result += A[i];
+    //         result += B[i];
+    //     } else if (i < A.size() && i < B.size()) {
+    //         Ctxt temp = oneCiphertext;
+    //         temp += A[i];
+    //         temp += B[i];
+    //         result *= temp;
+    //     } else if (i < A.size()) {
+    //         Ctxt temp = oneCiphertext;
+    //         temp += A[i];
+    //         result *= temp;
+    //     } else {
+    //         Ctxt temp = oneCiphertext;
+    //         temp += B[i];
+    //         result *= temp;
+    //     }
+    // }
+}
 /*
 	srcStr:原始string
 	Keyword:分割符
@@ -323,6 +415,7 @@ int InitializeFHE(FHESecKey*& secretKey_pointer, FHEcontext*& context_pointer, E
     long p = 2;
     long r = 1;
     long m = 18631;//21607;//20485; //18631;//32767; //16383;//32767; // 8191;//32767;
+    // long m = 255;
     int cap = 500;
     // long L = 31; //31
     // long m = FindM(80, 200, 2, p, 0, 0, 0);
@@ -395,61 +488,114 @@ void ptxt_to_inter(EncryptedArray* ea_pointer, vector<NTL::ZZX> &ptxt, int &inte
     }
 }
 
+// \overline(t'_j) = EQ(\overline(id), \overline(id'))
+// \overline(t'_j) = \overline(t_j) | \overline(t'_j)
 void recursive_OR(const FHEPubKey &publicKey, 
                   EncryptedArray * ea_pointer, 
-                  vector<vector<Ctxt>>& matching_positions, 
-                  Ctxt& cur_cipher,
+                  vector<vector<Ctxt>>& matching_id_sets, 
+                  vector<vector<vector<Ctxt>>>& matching_pos_sets, 
+                //   Ctxt& cur_cipher,
+                  int cur_row_ind,
+                  int cur_col_ind,
+                  vector<Ctxt>& keyword_len_cipher,
+                  Ctxt& oneCiphertext,
                   int row_ind,
                   int left_col_ind, 
                   int right_col_ind,
                   Ctxt& col_equal_flag){
-    // struct timeval time1, time2;
-    // float evaluate_time = 0;
+    struct timeval time1, time2;
+    float evaluate_time = 0;
+    Ctxt temp_flag1(publicKey);
+    Ctxt temp_flag2(publicKey);
+
     if (left_col_ind == right_col_ind){
+        equalTest(temp_flag1, 
+                matching_id_sets[cur_row_ind][cur_col_ind], 
+                matching_id_sets[row_ind][left_col_ind], 
+                ea_pointer->getDegree());
+
+        vector<Ctxt> temp_flag2;
+        CtPtrs_vectorCt pos_wrapper(temp_flag2);
+        // cout << "   before addTwoNumbers\n";
         // gettimeofday(&time1,NULL);
-        equalTest(col_equal_flag, cur_cipher, matching_positions[row_ind][left_col_ind], ea_pointer->getDegree());
+        addTwoNumbers(
+            pos_wrapper, 
+            CtPtrs_vectorCt(keyword_len_cipher), 
+            CtPtrs_vectorCt(matching_pos_sets[row_ind][left_col_ind]),
+            false);
         // gettimeofday(&time2,NULL);
         // evaluate_time =  1000 * ((time2.tv_sec-time1.tv_sec)+((double)(time2.tv_usec-time1.tv_usec))/1000000);
-        // printf("equalTest: %f (ms)\n",  evaluate_time);
+        // printf("addTwoNumbers time: %f (ms)\n",  evaluate_time);
+
+        // gettimeofday(&time1,NULL);
+        operationEQ(temp_flag2, matching_pos_sets[cur_row_ind][cur_col_ind], oneCiphertext, col_equal_flag);
+        // gettimeofday(&time2,NULL);
+        // evaluate_time =  1000 * ((time2.tv_sec-time1.tv_sec)+((double)(time2.tv_usec-time1.tv_usec))/1000000);
+        // printf("operationEQ time: %f (ms)\n",  evaluate_time);
+
+        operationAND(temp_flag1, col_equal_flag);
         return;
     }
 
-    Ctxt temp_col_equal_flag(publicKey);
     int mid_col_ind = left_col_ind + (right_col_ind - left_col_ind) / 2;
-    recursive_OR(publicKey, ea_pointer, matching_positions, cur_cipher, row_ind, left_col_ind, mid_col_ind, temp_col_equal_flag);
-    recursive_OR(publicKey, ea_pointer, matching_positions, cur_cipher, row_ind, mid_col_ind + 1, right_col_ind, col_equal_flag);
+    recursive_OR(
+        publicKey, 
+        ea_pointer, 
+        matching_id_sets, 
+        matching_pos_sets,
+        cur_row_ind, 
+        cur_col_ind, 
+        keyword_len_cipher,
+        oneCiphertext,
+        row_ind, 
+        left_col_ind, 
+        mid_col_ind, 
+        temp_flag1);
+    recursive_OR(
+        publicKey, 
+        ea_pointer, 
+        matching_id_sets, 
+        matching_pos_sets,
+        cur_row_ind, 
+        cur_col_ind, 
+        keyword_len_cipher,
+        oneCiphertext,
+        row_ind, 
+        mid_col_ind + 1, 
+        right_col_ind, 
+        temp_flag2);
 
-    // gettimeofday(&time1,NULL);
-    operationOR(temp_col_equal_flag, col_equal_flag);
-    // gettimeofday(&time2,NULL);
-    // evaluate_time =  1000 * ((time2.tv_sec-time1.tv_sec)+((double)(time2.tv_usec-time1.tv_usec))/1000000);
-    // printf("operationOR: %f (ms)\n",  evaluate_time);
+    operationOR(temp_flag1, temp_flag2);
+    col_equal_flag = temp_flag2;
 }
 
-void filter(const FHEPubKey &publicKey, 
+// filter for conjunctive logic
+void filter_conjunction(const FHEPubKey &publicKey, 
             EncryptedArray * ea_pointer, 
-            vector<vector<Ctxt>>& matching_positions, 
-            vector<Ctxt>& return_keywords,
-            int &small_size, 
-            int &largest_size){
+            vector<vector<Ctxt>>& matching_id_sets, 
+            vector<vector<vector<Ctxt>>>& matching_pos_sets, 
+            vector<Ctxt> keyword_len_cipher,
+            vector<Ctxt>& return_keywords){
+            // int &small_size, 
+            // int &largest_size){
     // find the small size of elment in matching_keywords
 
-    int small_ind = 0;
-    int largest_ind = 0;
+    // int small_ind = 0;
+    // int largest_ind = 0;
 
     // make sure the smallest set and the largest set
-    for (int i = 0; i < matching_positions.size(); i++){
-        if (matching_positions[i].size() < matching_positions[small_ind].size())
-            small_ind = i;
+    // for (int i = 0; i < matching_id_sets.size(); i++){
+    //     if (matching_id_sets[i].size() < matching_id_sets[small_ind].size())
+    //         small_ind = i;
 
-        if (matching_positions[i].size() > matching_positions[largest_ind].size())
-            largest_ind = i;
-    }
+    //     if (matching_id_sets[i].size() > matching_id_sets[largest_ind].size())
+    //         largest_ind = i;
+    // }
     
-    cout << "small_size = " <<  matching_positions[small_ind].size() << endl;
-    cout << "largest_size = " <<  matching_positions[largest_ind].size() << endl;
-    small_size = matching_positions[small_ind].size();
-    largest_size = matching_positions[largest_ind].size();
+    // cout << "small_size = " <<  matching_id_sets[small_ind].size() << endl;
+    // cout << "largest_size = " <<  matching_id_sets[largest_ind].size() << endl;
+    // small_size = matching_id_sets[small_ind].size();
+    // largest_size = matching_id_sets[largest_ind].size();
 
 
     std::vector<NTL::ZZX> onePlaintext(ea_pointer->size(), NTL::ZZX(1));
@@ -457,31 +603,43 @@ void filter(const FHEPubKey &publicKey,
     ea_pointer->encrypt(oneCiphertext, publicKey, onePlaintext);
 
     // Ctxt temp_equal_flag(publicKey); 
-    Ctxt row_equal_flag(publicKey); 
+    Ctxt t(publicKey); 
     Ctxt col_equal_flag(publicKey); 
-
     int equalTest_cnt = 0;
-    int AND_cnt = 0;
-    for (int j = 0; j < matching_positions[small_ind].size(); j++) {
-        cout  << j << "th result" << endl;
-        row_equal_flag = oneCiphertext;
+    // for (int j = 0; j < matching_id_sets[small_ind].size(); j++) {
+    for (int j = 0; j < matching_id_sets[0].size(); j++) {
+        cout  << "=========== filter the " << j << "th result in matching_id_sets[0]==============" << endl;
+        t = oneCiphertext;
         // cout << "row_equal_flag.capacity():" << row_equal_flag.capacity() << endl;
-        for (int row_ind = 0; row_ind < matching_positions.size(); row_ind++) {
+        for (int row_ind = 0; row_ind < matching_id_sets.size(); row_ind++) {
             // col_equal_flag = zeroCiphertext;
-            if (row_ind == small_ind || matching_positions[row_ind].size() == 0)
+            if (row_ind == 0 || matching_id_sets[row_ind].size() == 0)
                 continue;
+            recursive_OR(publicKey,
+                        ea_pointer,
+                        matching_id_sets,
+                        matching_pos_sets,
+                        // matching_id_sets[small_ind][j], 
+                        0,
+                        j,
+                        keyword_len_cipher,
+                        oneCiphertext,
+                        row_ind,
+                        0,
+                        matching_id_sets[row_ind].size() - 1,
+                        col_equal_flag);
 
-            recursive_OR(publicKey, ea_pointer, matching_positions, matching_positions[small_ind][j], row_ind, 0, matching_positions[row_ind].size() - 1, col_equal_flag);
-            // cout << "after recursive_OR:"  << col_equal_flag.capacity() << endl;
-
-            operationAND(col_equal_flag, row_equal_flag);
-            // cout << "operationAND " << AND_cnt << ": " << col_equal_flag.capacity() << "\t" << row_equal_flag.capacity() << endl;
-            AND_cnt++;
+            operationAND(col_equal_flag, t);
         }
         // Ctxt *new_keywords = new Ctxt(*matching_keywords[small_ind][j]);
-        return_keywords.push_back(matching_positions[small_ind][j]);
-        // return_keywords[return_keywords.size() - 1] *= row_equal_flag;
-        cout << "left capacity: " << row_equal_flag.capacity() << endl;
+        return_keywords.push_back(matching_id_sets[0][j]);
+
+        // vector<NTL::ZZX> plaintextResult;
+        // FHESecKey *secretKey_pointer = (FHESecKey *)&publicKey;
+        // ea_pointer->decrypt(t, *secretKey_pointer, plaintextResult);
+        // cout << "t:" << plaintextResult[0] << endl;
+        // // return_keywords[return_keywords.size() - 1] *= row_equal_flag;
+        // cout << "left capacity of t: " << t.capacity() << endl;
     }
 }
     
@@ -493,6 +651,8 @@ int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
     // time calculation
     struct timeval time1, time2;
     float evaluate_time = 0;
+    float evaluate_time1 = 0;
+    float evaluate_time2 = 0;
     
     // read keywords to keywords_list from the file
     vector<vector<string>> records;
@@ -515,13 +675,15 @@ int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
     }
         
     // Build a set of position heap
+    int pos_digit = 4;
     gettimeofday(&time1,NULL);
     vector<PositionHeap *> keywords_index;
-    for (int i = 0; i < AttributesSize; i++){
+    // for (int i = 0; i < AttributesSize; i++) {
+    for (int i = 0; i < 1; i++) {
         PositionHeap *heap = new PositionHeap(string_set[i].c_str(),
-                                            //   aes_key, 
                                               records, 
                                               i + 1,
+                                              pos_digit,
                                               secretKey_pointer, 
                                               ea_pointer, 
                                               context_pointer,
@@ -550,59 +712,434 @@ int TestNewSolution(char *file_name, int records_limit, int AttributesSize){
 
     int ptxt_num = ceil((float) records.size() / ea_pointer->size());
     int time_count = 0;
-    vector<vector<Ctxt>> one_attribute_result;
-
+    vector<vector<Ctxt>> matching_id_sets;
+    vector<vector<vector<Ctxt>>> matching_pos_sets;
     vector<vector<float>> size_time;
     int small_size;
     int largest_size;
 
-    cout << "start query\n";
-    for(int i = 100; i < 120; i++) {
+    // cout << "start query\n";
+    for (int i = 0; i < 30; i++) {
         // cout << "matching_keywords.size(): " << matching_keywords.size() << endl;
-        cout << "========= i : " << i << " =========\n";
+        // cout << "========= i : " << i << " =========\n";
+        int keyword_len = records[i][1].size();
+        if (keyword_len <= 6)
+            continue;
+        vector<string> query_keywords;
+        query_keywords.push_back(records[i][1].substr(0, (keyword_len - 1) / 2));
+        query_keywords.push_back(records[i][1].substr((keyword_len - 1) / 2 + 1, (keyword_len - 1) / 2));
+        cout << "query_keyword:" << query_keywords[0] << ", " << query_keywords[1] << endl;
+
         gettimeofday(&time1,NULL);
-        for (int j = 0; j < AttributesSize; j++){            
-            vector<Ctxt> temp_matching_position;
-            // keywords_index[j]->search(query_keywords[j].c_str(), 
-            keywords_index[j]->search(records[i][j + 1].c_str(), 
+        for (int j = 0; j < query_keywords.size(); j++){            
+            vector<Ctxt> temp_matching_id;
+            vector<vector<Ctxt>> temp_matching_pos;
+            keywords_index[0]->search(query_keywords[j].c_str(), 
+            // keywords_index[0]->search(records[i][0 + 1].substr(0, ), 
                                         // aes_key, 
                                         time_count,
                                         secretKey_pointer,
                                         ea_pointer, 
-                                        temp_matching_position);
-            // cout << "temp_matching_position.size() = " << temp_matching_position.size() << endl;
-            one_attribute_result.push_back(temp_matching_position);
-        }
+                                        temp_matching_id, 
+                                        temp_matching_pos);
+            cout << "matching.size() = " << temp_matching_id.size() << endl;
+            matching_id_sets.push_back(temp_matching_id);
+            matching_pos_sets.push_back(temp_matching_pos);
 
-        vector<Ctxt> multi_attributes_result;
-        filter(publicKey, ea_pointer, one_attribute_result, multi_attributes_result, small_size, largest_size);
+            // print the matching records and pos
+            // for (int i = 0; i < temp_matching_id.size(); i++) {
+
+            //     vector<NTL::ZZX> plaintextResult(ea_pointer->size(), NTL::ZZX(0));
+
+            //     ea_pointer->decrypt(temp_matching_id[i], *secretKey_pointer, plaintextResult);
+
+            //     cout << "id:" << poly2Long(plaintextResult[0]) << endl;
+
+            //     // cout << "temp_matching_pos[i].size():" << temp_matching_pos[i].size() << endl;
+            //     vector<long> pos_result;
+            //     CtPtrs_vectorCt matching_pos_wrapper(temp_matching_pos[i]);
+            //     decryptBinaryNums(pos_result, matching_pos_wrapper, *secretKey_pointer, *ea_pointer);
+            //     cout << "pos: " << pos_result[0] << endl;
+
+            // }
+        }
+        gettimeofday(&time2, NULL);
+        //msec
+        evaluate_time1 = 1000*((time2.tv_sec-time1.tv_sec) + ((double)(time2.tv_usec-time1.tv_usec))/1000000);
+        cout << "search time: " << evaluate_time1 <<  "(ms)" << endl;
+
+        // encrypt keyword_len to keyword_len_cipher
+        Ctxt scratch(publicKey);
+        vector<Ctxt> keyword_len_cipher(pos_digit, scratch);
+        for (int i = 0; i < pos_digit; i++) {
+            vector<long> keyword_len_plain(ea_pointer->size());
+            for (auto& slot : keyword_len_plain)
+                slot = ((query_keywords[0].size() + 1) >> i) & 1;
+            ea_pointer->encrypt(keyword_len_cipher[i], publicKey, keyword_len_plain);
+        }
+        gettimeofday(&time1, NULL);
+
+        vector<Ctxt> result_set;
+        filter_conjunction(publicKey, 
+                ea_pointer, 
+                matching_id_sets, 
+                matching_pos_sets,
+                keyword_len_cipher,
+                result_set); 
+                // small_size, 
+                // largest_size);
         gettimeofday(&time2, NULL);
 
-        //msec
-        evaluate_time = 1000*((time2.tv_sec-time1.tv_sec) + ((double)(time2.tv_usec-time1.tv_usec))/1000000);
-        cout << "search time: " << evaluate_time << endl;
+        evaluate_time2 = 1000*((time2.tv_sec-time1.tv_sec) + ((double)(time2.tv_usec-time1.tv_usec))/1000000);
+        cout << "filter time: " << evaluate_time2 <<  "(ms)" << endl;
         
-        vector<float> temp = {(float)small_size, (float)largest_size, evaluate_time};
+        vector<float> temp = {(float)matching_id_sets[0].size(), (float)matching_id_sets[1].size(), evaluate_time1, evaluate_time2};
         size_time.push_back(temp);
 
         //msec
         // evaluate_time = 1000*((time2.tv_sec-time1.tv_sec) + ((double)(time2.tv_usec-time1.tv_usec))/1000000);
         // cout << "filter time: " << evaluate_time << endl;
 
-        one_attribute_result.clear();
-        multi_attributes_result.clear();
+        matching_id_sets.clear();
+        matching_pos_sets.clear();
+        result_set.clear();
     }
 
     for (int i = 0; i < size_time.size(); i++)
-        cout << size_time[i][0] << "\t" << size_time[i][1] << "\t"<< size_time[i][2] << endl;
+        cout << size_time[i][0] << "\t" << size_time[i][1] << "\t"<< size_time[i][2] << "\t" << size_time[i][3] << endl;
 
     for (int i = 0; i < keywords_index.size(); i++)
         delete keywords_index[i];
+
     freeFHE(secretKey_pointer, context_pointer, ea_pointer);
 
     return 0;  
 }
 
+
+void IndexBuildForPreSolu(long numSlots, 
+                long numEmpty, 
+                long wordLength, 
+                FHESecKey *secretKey_pointer,
+                EncryptedArray* ea_pointer, 
+                Ctxt &ciphertextAttr){
+    const FHEPubKey &publicKey = *secretKey_pointer;
+
+    char blankChar = 2;
+    char wcChar = 3;
+    char excludeChar = 4;
+
+    // build the index
+    // * wildcard is encoded as ASCII code 2
+    // # wildcard is encoded as ASCII code 3
+    std::string attrString = "spares"; // use the same attributes
+    std::cout << std::endl << "Attribute String: " << attrString << std::endl;
+
+    std::vector<NTL::ZZX> plaintextAttr; 
+#if new_simd
+    for(long i = 0; i < attrString.length(); i++)
+        plaintextAttr.resize((i+1)*numWords, char2Poly(attrString[i]));
+    for(long i = attrString.length(); i < wordLength; i++)
+        plaintextAttr.resize((i+1)*numWords, plaintextAttr[i] = char2Poly(blankChar));
+#else
+    plaintextAttr.resize(numSlots-numEmpty, NTL::ZZX(0));
+    for (unsigned long i = 0; i < attrString.length(); i++) 
+        plaintextAttr[i] = char2Poly(attrString[i]);
+    for (unsigned long i = attrString.length(); i < wordLength; i++)
+        plaintextAttr[i] = char2Poly(blankChar);
+    for (unsigned long i = wordLength; i < numSlots - numEmpty; i++)
+        plaintextAttr[i] = plaintextAttr[i % wordLength];    
+#endif
+    plaintextAttr.resize(numSlots, NTL::ZZX(0));
+
+    // Ctxt ciphertextAttr(publicKey);
+    ea_pointer->encrypt(ciphertextAttr, publicKey, plaintextAttr);
+
+    return;
+}
+
+
+int TestPreSolution(char *file_name, int records_limit, int AttributesSize){
+
+    // Timers
+    auto startTime = std::chrono::high_resolution_clock::now();
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> timeTaken = endTime - startTime;
+    float totalTime = 0;
+
+    // initial FHE
+    FHESecKey *secretKey_pointer = NULL;
+    FHEcontext *context_pointer = NULL;
+    EncryptedArray *ea_pointer = NULL;
+    InitializeFHE(secretKey_pointer, context_pointer, ea_pointer);
+
+    long numSlots = ea_pointer->size(); // the number of points in a ciphertext or plaintext
+    long plaintextDegree = ea_pointer->getDegree();
+    const FHEPubKey &publicKey = *secretKey_pointer;
+
+    char blankChar = 2;
+    char wcChar = 3;
+    char excludeChar = 4;
+
+    long wordLength = 10; 
+    long queryLength;      
+     
+    long numWords = floor(numSlots / wordLength); 
+    long numEmpty = numSlots % wordLength;
+    long conjSize = 3;//atoi(argv[4]);
+
+    Ctxt ciphertextAttr(publicKey);
+    IndexBuildForPreSolu(numSlots, numEmpty, wordLength, secretKey_pointer, ea_pointer, ciphertextAttr); 
+    
+    // "$" is the wildcard character symbol
+    std::string queryString = "sp";
+    queryString += wcChar;
+    queryString += excludeChar;
+    queryString += "c";
+    queryString += "e";
+    queryLength = queryString.length();
+    std::cout << "Query Pattern: " << queryString << std::endl;
+
+    std::vector<NTL::ZZX> plaintextQuery, plaintextE;
+    // std::vector<NTL::ZZX> plaintextConjunction((unsigned long) numSlots, long2Poly(rand() % (1L << 7)));
+
+    plaintextQuery.resize(numSlots-numEmpty, NTL::ZZX(0));
+    plaintextE.resize(numSlots-numEmpty, NTL::ZZX(0));
+    int counter = 0;
+    for (unsigned long i = 0; i < queryString.length(); i++) {
+        if (queryString[i] == wcChar) {
+            plaintextQuery[counter] = char2Poly(excludeChar);
+            plaintextE[counter] = 1;
+            counter++;
+        } else if (queryString[i] == excludeChar) {
+            plaintextQuery[counter] = char2Poly(queryString[i + 1]);
+            plaintextE[counter] = 1;
+            i += 1;
+            counter++;
+        } else {
+            plaintextQuery[counter] = char2Poly(queryString[i]);
+            counter++;
+        }
+    }
+    for (unsigned long i = counter; i < wordLength; i++) {
+        plaintextQuery[i] = char2Poly(wcChar);
+        plaintextE[i] = 1;
+    }
+    for (unsigned long i = wordLength; i < numSlots - numEmpty; i++) {
+        plaintextQuery[i] = plaintextQuery[i % wordLength];
+        plaintextE[i] = plaintextE[i % wordLength];
+    }
+
+    plaintextQuery.resize(numSlots, NTL::ZZX(0));
+    plaintextE.resize(numSlots, NTL::ZZX(0));
+
+    std::vector<NTL::ZZX> plaintextResult((unsigned long) numSlots - numEmpty, NTL::ZZX(1));
+    plaintextResult.resize(numSlots, NTL::ZZX(0));
+
+    std::clog << "wordLength:" << wordLength << ", " << "queryLength: " << queryLength << ", " << "numWords: " << numWords << ", ";
+
+    // Initialize and encrypt query ciphertexts
+    Ctxt ciphertextQuery(publicKey);
+    Ctxt tempCiphertext(publicKey);
+    Ctxt ciphertextE(publicKey);
+    Ctxt ciphertextResult(publicKey);
+    Ctxt conjResult(publicKey);
+//        Ctxt conjQuery(publicKey);
+//        Ctxt conjCtxt(publicKey);
+
+    ea_pointer->encrypt(ciphertextQuery, publicKey, plaintextQuery);
+    ea_pointer->encrypt(ciphertextE, publicKey, plaintextE);
+//        ea.encrypt(conjCtxt, publicKey, plaintextConjunction);
+//        ea.encrypt(conjQuery, publicKey, plaintextConjunction);
+
+    Ctxt oneCiphertext(publicKey);
+    Ctxt zeroCiphertext(publicKey);
+
+    std::vector<NTL::ZZX> onePlaintext(numSlots, NTL::ZZX(1));
+
+    ea_pointer->encrypt(oneCiphertext, publicKey, onePlaintext);
+    zeroCiphertext = oneCiphertext;
+    zeroCiphertext -= oneCiphertext;
+
+    // ciphertextWs is a set of \overline{A}
+    // 文章的 algorithm 1 中有一个次数为 wordlength 的循环， 这里通过 vector 的形式统一运算
+    std::vector<Ctxt> ciphertextWs, ciphertextRs, ciphertextSs, ciphertextDs;
+    for (unsigned long i = 0; i < wordLength; i++) {
+        ciphertextWs.push_back(ciphertextAttr);
+        ciphertextRs.push_back(ciphertextAttr);
+        ciphertextSs.push_back(ciphertextAttr);
+    }
+    
+    // ciphertextDs is a set of \overline{D} 
+    for (unsigned long i = 0; i < wordLength; i++) {
+        if (i <= wordLength - queryLength) {
+            ciphertextDs.push_back(oneCiphertext);
+        } else {
+            ciphertextDs.push_back(zeroCiphertext);
+        }
+    }
+
+    // For compound conjunction queries
+    std::vector<Ctxt> ciphertextConj;
+    std::vector<Ctxt> ciphertextConjResult;
+    for (unsigned long i = 0; i < conjSize; i++) {
+        ciphertextConj.push_back(ciphertextAttr);
+        ciphertextConjResult.push_back(ciphertextAttr);
+    }
+
+    std::cout << "Encryption Done!" << std::endl;
+
+    NTL::ZZX selectPoly;
+    NTL::ZZX queryMask, finalMask;
+    makeMask(selectPoly, 1, 1, wordLength, *ea_pointer);
+    makeMask(finalMask, wordLength, 1, wordLength, *ea_pointer);
+
+    // Step 1: Shift the attributes
+    //     Remnants of experiment to pack differently, all characters of the same slot first
+    //     But the shift time is much longer than packing word by word
+
+    //     startTime = std::chrono::high_resolution_clock::now();
+    // #pragma omp parallel for
+    //     for(unsigned long i = 1; i < ciphertextWs.size(); i++) {
+    //             ea.shift(ciphertextWs[i],-i*numWords);
+    //     }
+    //     endTime = std::chrono::high_resolution_clock::now();
+    //     timeTaken = endTime-startTime;
+    //     totalTime += timeTaken.count();
+    //     std::cout << "Pre-compute Time: " << timeTaken.count() << std::endl;
+
+    startTime = std::chrono::high_resolution_clock::now();
+    for (unsigned long i = 1; i < ciphertextWs.size(); i++) {
+        simdShift(ciphertextWs[i], ciphertextAttr, -i, wordLength, *ea_pointer);
+    }
+    endTime = std::chrono::high_resolution_clock::now();
+    timeTaken = endTime - startTime;
+    // totalTime += timeTaken.count();
+    std::cout << "Pre-compute Time: " << timeTaken.count() << std::endl;
+
+    // Step 2: Test if the characters are the same
+    startTime = std::chrono::high_resolution_clock::now();
+    // X = A - W
+    for (unsigned long i = 0; i < ciphertextWs.size() + conjSize; i++) {
+        if (i < ciphertextWs.size()) {
+            ciphertextWs[i] += ciphertextQuery;
+        } else {
+            ciphertextConj[i - ciphertextWs.size()] += ciphertextAttr;
+        }
+    }
+    endTime = std::chrono::high_resolution_clock::now();
+    timeTaken = endTime - startTime;
+    totalTime += timeTaken.count();
+    std::cout << "XOR Time: " << timeTaken.count() << std::endl;
+
+    startTime = std::chrono::high_resolution_clock::now();
+    // Y = EQ(x, 0)
+    for (unsigned long i = 0; i < ciphertextWs.size() + conjSize; i++) {
+        if (i < ciphertextWs.size()) {
+            // ciphertextRs is a set of \overline{Y}
+            equalTest(ciphertextRs[i], zeroCiphertext, ciphertextWs[i], plaintextDegree);
+        } else {
+            equalTest(ciphertextConjResult[i - ciphertextWs.size()], zeroCiphertext,
+                      ciphertextConj[i - ciphertextWs.size()], plaintextDegree);
+        }
+        // S <- Y_i + E
+        // for(unsigned long i = 0; i < ciphertextRs.size(); i++) {
+        // ciphertextRs is \overline{S}
+        if (i < ciphertextWs.size()) {
+            ciphertextRs[i] += ciphertextE;
+        }
+    }
+    endTime = std::chrono::high_resolution_clock::now();
+    timeTaken = endTime - startTime;
+    totalTime += timeTaken.count();
+    std::cout << "Level left: " << ciphertextRs[1].capacity() << ", Equality Check + eMask Time: " << timeTaken.count() << std::endl;
+    std::clog << timeTaken.count() << ", ";
+
+    // Step 3: Combine results of character tests per shift
+    startTime = std::chrono::high_resolution_clock::now();
+    // z_i = \prod_{s_i,j}
+    for (unsigned long i = 0; i < ciphertextRs.size() + conjSize; i++) {
+        if (i < ciphertextRs.size()) {
+            oneTotalProduct(ciphertextSs[i], ciphertextRs[i], wordLength, *ea_pointer);
+        } else if (conjSize > 0) {
+            oneTotalProduct(ciphertextConj[i - ciphertextRs.size()], ciphertextConjResult[i - ciphertextRs.size()],
+                            wordLength, *ea_pointer);
+        }
+    }
+    endTime = std::chrono::high_resolution_clock::now();
+    timeTaken = endTime - startTime;
+    totalTime += timeTaken.count();
+    std::cout << "Level left: " << ciphertextSs[1].capacity() << ", Product of Equalities: " << timeTaken.count() << std::endl;
+    std::clog << timeTaken.count() << ", ";
+
+    // Step 4: Combine results from testing every possible shift
+    startTime = std::chrono::high_resolution_clock::now();
+    // 1 + z_i * d_i
+    // ciphertextSs is a set of \overline{z_i}
+    for (unsigned long i = 0; i < ciphertextSs.size(); i++) {
+        ciphertextSs[i].multiplyBy(ciphertextDs[i]);
+        ciphertextSs[i].addConstant(selectPoly);
+    }
+    endTime = std::chrono::high_resolution_clock::now();
+    timeTaken = endTime - startTime;
+    totalTime += timeTaken.count();
+    std::cout << "Level left: " << ciphertextSs[1].capacity() << ", Disjunction Prep Time: " << timeTaken.count() << std::endl;
+    std::clog << timeTaken.count() << ", ";
+
+    startTime = std::chrono::high_resolution_clock::now();
+    // ciphertextResult = 1 + \sigma(1 + z * d)
+    treeMult(ciphertextResult, ciphertextSs);
+    ciphertextResult.addConstant(selectPoly);
+
+    // \sigma * \sigma * \belta_{i,j} + 1
+    if (conjSize > 0) {
+        treeMult(conjResult, ciphertextConj);
+        ciphertextResult.multiplyBy(conjResult);
+    }
+    // ciphertextResult.multByConstant(finalMask);
+    endTime = std::chrono::high_resolution_clock::now();
+    timeTaken = endTime - startTime;
+    totalTime += timeTaken.count();
+    std::cout << "Level left: " << ciphertextResult.capacity() << ", Disjunction Time: " << timeTaken.count() << std::endl;
+    std::clog << timeTaken.count() << ", ";
+
+    std::clog << totalTime << ", ";
+
+    startTime = std::chrono::high_resolution_clock::now();
+    tempCiphertext = ciphertextResult;
+    
+    for (unsigned long i = 1; i < wordLength; i++) {
+        ciphertextWs[i] = ciphertextResult;
+        ea_pointer->shift(ciphertextWs[i], i);
+    }
+    for (unsigned long i = 1; i < wordLength; i++) {
+        tempCiphertext += ciphertextWs[i];
+    }
+    tempCiphertext.multiplyBy(ciphertextAttr);
+    // 此时， 如果 ciphertextResult 中第一个位置是1，那么 tempCiphertext 是 “sparce”
+    endTime = std::chrono::high_resolution_clock::now();
+    timeTaken = endTime - startTime;
+    // totalTime += timeTaken.count();
+    std::cout << "Level left: " << tempCiphertext.capacity() << ", Fill + Selection Time: " << timeTaken.count() << std::endl;
+    // std::clog << timeTaken.count() << ", ";
+
+    std::cout << "Total Time: " << totalTime << std::endl;
+
+    std::cout << "ciphertextResult: " << std::endl;
+    ea_pointer->decrypt(ciphertextResult, *secretKey_pointer, plaintextResult);
+    for (unsigned long i = 0; i < wordLength; i++) {
+        std::cout << poly2Long(plaintextResult[i]) << ", ";
+    }
+    std::cout << std::endl;
+
+    std::cout << "tempciphertext: " << std::endl;
+    ea_pointer->decrypt(tempCiphertext, *secretKey_pointer, plaintextResult);
+    for (unsigned long i = 0; i < wordLength; i++) {
+        std::cout << poly2Char(plaintextResult[i]) << ", ";
+    }
+    std::cout << std::endl;
+
+}
 
 int main(int argc, char * argv[])
 {
@@ -621,7 +1158,7 @@ int main(int argc, char * argv[])
         for (int record_num = 500; record_num <= 500; record_num += 500) {
             cout << "=============== TestNewSolution =================\n"; 
             cout << "records_num = " << record_num2 << endl;
-            TestNewSolution(file_name, record_num2, AttrSize2);
+            TestNewSolution(file_name, record_num2, 2);
             // cout << "=============== TestPreSolution =================\n";
             // TestInvertedIndex(file_name, 5000, AttrSize);
             // cout << "=============== TestSuffixTreeSolution =================\n";
