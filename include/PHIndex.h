@@ -85,7 +85,7 @@ class PositionHeap {
 public:
     vector<Node> nodes;
     vector<Ctxt> cipher; // cipher is used to store all the encrypted id stored in this position heap;
-    vector<vector<Ctxt>> pos; // pos is used to store related positions of nodes
+    // vector<vector<Ctxt>> pos; // pos is used to store related positions of nodes
 
     PositionHeap(const char T[], 
                 //  unsigned char *aes_key, 
@@ -119,7 +119,7 @@ public:
         nodes.resize(n+1, Node(ea_pointer->size(), publicKey));
         cipher.resize(cipher_num, Ctxt(publicKey));
         vector<Ctxt> pos_temp(id_digit, Ctxt(publicKey));
-        pos.resize(cipher_num, pos_temp);
+        // pos.resize(cipher_num, pos_temp);
 
         // vector<NTL::ZZX> bitmap_plaintext(ea_pointer->size() * ptxt_num, NTL::ZZX(0));
         vector<vector<NTL::ZZX>> plain;
@@ -193,7 +193,8 @@ public:
             time_count++;
             matching_position.push_back(cipher[itr->second / ea_pointer->size()]);
 
-            replicate(*ea_pointer, matching_position[matching_position.size() - 1], (itr->second) % ea_pointer->size());
+            // replicate(*ea_pointer, matching_position[matching_position.size() - 1], (itr->second) % ea_pointer->size());
+            ea_pointer->shift(matching_position[matching_position.size() - 1], - ((itr->second) % ea_pointer->size()));
             appendSubtree(secretKey_pointer, itr->second, matching_position, ea_pointer, time_count);
             // }
         }
@@ -237,7 +238,8 @@ public:
             // cout << "line 349 test_plaintext: " << test_plaintext << endl;
             // cout << v % ea_pointer->size() << endl;
 
-            replicate(*ea_pointer, matching_position[matching_position.size() - 1], v % ea_pointer->size());
+            // replicate(*ea_pointer, matching_position[matching_position.size() - 1], v % ea_pointer->size());
+            ea_pointer->shift(matching_position[matching_position.size() - 1], - (v % ea_pointer->size()));
         }
         
         if (v != -1)
